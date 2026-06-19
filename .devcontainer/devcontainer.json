@@ -1,0 +1,22 @@
+
+{
+  "name": "book-rag",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "forwardPorts": [5432],
+  // no pyproject yet (S0 skeleton not built) — for now just check the toolchain.
+  // Once the workspace exists, replace with "uv sync".
+  "postCreateCommand": "uv --version && python --version",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}

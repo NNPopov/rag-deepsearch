@@ -1,0 +1,45 @@
+# rag config (query side) — the single source of truth (composition root).
+# See Rag_query_architecture.md §6/§8. Only non-secret defaults + binding of secret names from env.
+# Actual secret values are in env (one secret per machine); optional .secrets.toml (gitignored).
+
+# Secrets: the name is bound from env, the value is NOT in git. Accessing a missing secret
+# fails (format KeyError) rather than returning "silent" garbage.
+database_url     = "@format {env[DATABASE_URL]}"
+openai_api_key   = "@format {env[OPENAI_API_KEY]}"
+deepseek_api_key = "@format {env[DEEPSEEK_API_KEY]}"
+
+[embed]
+# The contract embedding dimension — must match db.DIMENSION (halfvec(N)).
+# load_settings() validates this equality and fails on a mismatch.
+dimensions = 1536
+model = "text-embedding-3-large"
+
+[llm]
+# Model per task (model_map sources). DECIDED (§9): mechanics (PLAN/REFLECT — structured JSON)
+# on the cheap/fast v4-flash; final synthesis — on the strong reasoning v4-pro. Both are DeepSeek-V4
+# reasoning models (they emit reasoning_content + the answer in content; the gateway takes content, sets no max_tokens).
+# deepseek-chat disappeared from /models (alive as an alias) — migrated to v4.
+plan    = "deepseek/deepseek-v4-flash"
+reflect = "deepseek/deepseek-v4-flash"
+synth   = "deepseek/deepseek-v4-pro"
+retries = 3
+
+[search]
+# Retrieval parameters. top_k — per EACH query; rrf_k — the RRF constant (as in S14).
+top_k = 8
+rrf_k = 60
+mmr_lambda = 0.5            # balance relevance(1.0)↔diversity(0.0)
+mmr_top_n = 12             # how many to keep after MMR before EXPAND
+relevance_threshold = 0.0  # CRAG threshold; 0 = no cutoff (tuned after the ≥2nd document)
+max_chunks = 40            # context budget: how many chunks reach EXPAND/SYNTH
+references_penalty = 0.3    # RRF-score multiplier for bibliography-list sections (1.0 = off); down, not out
+
+[loop]
+max_iterations = 3         # ceiling on REFLECT-loop iterations
+cost_ceiling = 0.0         # query cost ceiling; 0 = no ceiling (PoC)
+
+[corpus]
+# Corpus (books) language. Cross-lingual search (§5): PLAN/REFLECT translate the search queries
+# (vector+bm25) into this language regardless of the question's language; SYNTH answers in the question's language.
+# Currently both books (DDIA, Acing) are English. Overridden by the --corpus-language flag.
+language = "English"

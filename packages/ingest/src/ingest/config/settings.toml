@@ -1,0 +1,30 @@
+# ingest config — the single source of truth (composition root). See Rag_pipeline_architecture.md §7.
+# ONLY non-secret defaults + centralized mapping of secret names from env.
+# Actual secret values live in environment variables (one secret per machine);
+# an optional local `.secrets.toml` (gitignored) overrides the defaults.
+
+run_dir = "runs"
+
+# Secrets: the name is bound from env, the value is NOT in git. Accessing a missing secret
+# fails (format KeyError) rather than returning "silent" garbage.
+database_url     = "@format {env[DATABASE_URL]}"
+openai_api_key   = "@format {env[OPENAI_API_KEY]}"
+deepseek_api_key = "@format {env[DEEPSEEK_API_KEY]}"
+
+[embed]
+# The contract embedding dimension — must match db.DIMENSION (halfvec(N)).
+# load_settings() validates this equality and fails on a mismatch.
+dimensions = 1536
+model = "text-embedding-3-large"
+# Batching (S11): accumulate chunks into a request by token budget and batch-size limit.
+max_batch_tokens = 100000
+max_batch_size = 2048
+
+[chunk]
+chunk_size = 800
+overlap = 100
+
+[llm]
+# Model per task: default — cheap DeepSeek for mechanics (cleaning/reformulation).
+default = "deepseek/deepseek-chat"
+retries = 3

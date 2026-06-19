@@ -1,0 +1,52 @@
+*.pyc
+__pycache__/
+
+# Python venv (host uv environment) and pipeline run artifacts
+.venv/
+runs/
+
+# Agent session traces (Stone CLI) — never commit
+.stone/
+**/.stone/
+
+# Local RAG work artifacts and source documents — not committed for now
+work/
+*.pdf
+# Exception: Pro Git is freely licensed (CC BY-NC-SA 3.0) — the public test corpus
+# for the golden set. Copyrighted books (DDIA/Acing) stay under the general *.pdf ignore.
+!data/progit/*.pdf
+
+# Secrets / local env — never commit
+.env
+**/.env
+*.secrets.toml
+
+# Documentation and local agent config — not tracked
+docs/
+.claude/
+.claude/decisions/   # ADRs / retrospectives (already covered by .claude/, kept explicit)
+
+# Spec-driven development artifacts — private
+specs/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Python build / packaging artifacts
+*.egg-info/
+build/
+dist/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.idea/
+CLAUDE.md
+

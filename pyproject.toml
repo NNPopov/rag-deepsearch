@@ -1,0 +1,42 @@
+# Root of the uv workspace (monorepo). NOT a package itself (package = false) —
+# it only aggregates members and holds dev/test dependencies.
+# We work on the Windows host in .venv; the DB is the `db` service in Docker (localhost:55432).
+[project]
+name = "rag-deepsearch"
+version = "0.0.0"
+description = "RAG ingestion monorepo (uv workspace): app ingest + shared {db, llm_gateway}"
+requires-python = ">=3.12"
+dependencies = [
+    "db",
+    "llm_gateway",
+    "ingest",
+    "rag",
+    "serve",
+]
+
+[tool.uv]
+package = false                       # virtual root: don't build/install rag-deepsearch itself
+
+[tool.uv.workspace]
+# packages/shared/* — shared libraries (db, llm_gateway); packages/ingest — ingestion;
+# packages/rag — query side (part 2); packages/serve — transport (part 3).
+members = ["packages/ingest", "packages/rag", "packages/serve", "packages/shared/*"]
+
+[tool.uv.sources]
+db = { workspace = true }
+llm_gateway = { workspace = true }
+ingest = { workspace = true }
+rag = { workspace = true }
+serve = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "psycopg[binary]>=3.1",           # R1/R8 tests hit live ParadeDB directly
+    "pgvector>=0.3.6",                # halfvec adapter for psycopg
+    "httpx>=0.27",                    # FastAPI TestClient for transport tests (part 3)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/pipeline"]        # Stage 2 tests; leave the old tests/ alone
+addopts = "-ra"

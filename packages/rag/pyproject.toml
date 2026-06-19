@@ -1,0 +1,27 @@
+# QUERY app package (part 2): deep-search loop over the populated DB.
+# Depends on the shared llm_gateway and db by name (uv workspace). Code-wise it does NOT depend on
+# ingest — they meet only at the DB schema. Web-free: transport (FastAPI/A2A) is a separate package packages/serve.
+[project]
+name = "rag"
+version = "0.0.0"
+description = "RAG query side: deep-search loop (PLAN/SEARCH/REFLECT/EXPAND/SYNTH) over the DB"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "dynaconf>=3.2",
+    "psycopg[binary]>=3.1",           # searchers hit ParadeDB (vector KNN + BM25)
+    "pgvector>=0.3.6",                # halfvec adapter for psycopg
+    "db",
+    "llm_gateway",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag"]
+
+[tool.uv.sources]
+db = { workspace = true }
+llm_gateway = { workspace = true }

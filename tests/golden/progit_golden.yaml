@@ -1,0 +1,95 @@
+# Golden set for the RAG pipeline — the Pro Git corpus (open book, CC BY-NC-SA 3.0).
+#
+# Purpose: a reproducible RETRIEVAL QUALITY check on a freely distributable
+# corpus (publishable in an open repo — unlike DDIA/Acing).
+# Level — RETRIEVAL (deterministic, no LLM judge): question → the expected chapter must
+# land in the hybrid top-k (vector+bm25→RRF). This checks retrieval and cross-linguality,
+# NOT the final answer (answer-level is separate, via an LLM judge, optional).
+#
+# Pro Git's structure is CHAPTER-level (profile `progit`, §4.2.1): the book's section headings
+# are bare lines without markers, not reliably detectable; chapter = one section (small2big → chapter).
+# So the reference is the CHAPTER path (ltree `path`, i.e. ordinal 1..10), not a subsection.
+#
+# Cross-linguality (§5): RU questions are posed against the SAME English corpus — PLAN/REFLECT search
+# in the corpus language, the answer (SYNTH) in the question language. Checks that a non-English question
+# still leads to the correct chapter.
+
+corpus:
+  document_external_id: progit
+  document_title: Pro Git
+  source_pdf: data/progit/progit_en.pdf
+  source_release: "progit2 2.1.450"          # github.com/progit/progit2 release
+  license: CC BY-NC-SA 3.0
+  attribution: "Pro Git, 2nd Edition — Scott Chacon and Ben Straub (Apress)"
+  embedding_model: text-embedding-3-large    # the query MUST be embedded with the same model
+  embedding_dimensions: 1536
+  structure_granularity: chapter             # reference is the chapter (profile=progit)
+
+# Chapter map (path → title) for report readability.
+chapters:
+  "1": Getting Started
+  "2": Git Basics
+  "3": Git Branching
+  "4": Git on the Server
+  "5": Distributed Git
+  "6": GitHub
+  "7": Git Tools
+  "8": Customizing Git
+  "9": Git and Other Systems
+  "10": Git Internals
+
+# Default threshold: the expected chapter must be among the first min_recall_k chunks
+# of the hybrid result (RRF). All questions below were verified live on rag_public
+# (see tests/golden/README.md) — each returned the expected chapter at rank @1.
+default_min_recall_k: 5
+
+questions:
+  - id: branch-create
+    question: "How do I create a new branch and switch to it?"
+    language: en
+    expect_chapters: ["3"]
+  - id: merge-vs-rebase
+    question: "What is the difference between merging and rebasing branches?"
+    language: en
+    expect_chapters: ["3"]
+  - id: internals-objects
+    question: "How does Git store data internally as blobs, trees and commits?"
+    language: en
+    expect_chapters: ["10"]
+  - id: server-ssh
+    question: "How do I set up Git on a server over SSH?"
+    language: en
+    expect_chapters: ["4"]
+  - id: hooks
+    question: "What are Git hooks and how do I use them?"
+    language: en
+    expect_chapters: ["8"]
+  - id: stage-commit
+    question: "How do I stage files and record changes to the repository?"
+    language: en
+    expect_chapters: ["2"]
+  - id: github-pr
+    question: "How do I fork a project and open a pull request on GitHub?"
+    language: en
+    expect_chapters: ["6"]
+  - id: stash
+    question: "How do I temporarily stash my uncommitted changes?"
+    language: en
+    expect_chapters: ["7"]
+  - id: first-time-setup
+    question: "How do I configure my user name and email for first-time setup?"
+    language: en
+    expect_chapters: ["1"]
+  - id: distributed-workflow
+    question: "How do contributors collaborate in a distributed Git workflow?"
+    language: en
+    expect_chapters: ["5"]
+  # --- cross-lingual (RU question against the English corpus) ---
+  - id: undo-commit-ru
+    question: "Как отменить последний коммит в Git?"
+    language: ru
+    expect_chapters: ["2"]
+  - id: merge-vs-rebase-ru
+    question: "Чем отличается слияние веток от перебазирования?"
+    language: ru
+    expect_chapters: ["3"]
