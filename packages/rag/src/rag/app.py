@@ -31,8 +31,14 @@ def build_model_map(settings) -> dict[str, str]:
     }
 
 
-def build_gateway(settings, *, completion_fn=None, embedding_fn=None):
-    """The single LLM gateway from config (config-agnostic — values are passed to the constructor)."""
+def build_gateway(
+    settings, *, completion_fn=None, embedding_fn=None, acompletion_fn=None, aembedding_fn=None
+):
+    """The single LLM gateway from config (config-agnostic — values are passed to the constructor).
+
+    Dual-surface (ADR-0002): the query side uses the async methods (`acompletion`/`aembedding`),
+    which default to `litellm.acompletion`/`aembedding`; the sync methods are kept for ingest. The
+    `*_fn` are injectable for tests/substitution."""
     from llm_gateway import Gateway
 
     return Gateway(
@@ -41,16 +47,20 @@ def build_gateway(settings, *, completion_fn=None, embedding_fn=None):
         retries=int(settings.llm.retries),
         completion_fn=completion_fn,
         embedding_fn=embedding_fn,
+        acompletion_fn=acompletion_fn,
+        aembedding_fn=aembedding_fn,
     )
 
 
 def build_connect(settings) -> Callable[[], object]:
-    """Factory of fresh DB connections (DSN from config, read lazily — on call)."""
+    """Factory of fresh ASYNC DB connections (ADR-0002): the searchers do `await connect()`.
 
-    def _connect():
-        import psycopg
+    DSN is read lazily (on call, not at build time); `db.aconnect` opens a psycopg AsyncConnection."""
 
-        return psycopg.connect(str(settings.database_url))
+    async def _connect():
+        from db import aconnect
+
+        return await aconnect(str(settings.database_url))
 
     return _connect
 

@@ -7,9 +7,22 @@ Overridable via env:
   TEST_MAINT_DSN     — DSN to the maintenance DB for CREATE/DROP DATABASE (default .../rag)
   TEST_DATABASE_URL  — DSN to the test DB itself (default .../rag_test)
 """
+import asyncio
 import os
+import selectors
+import sys
 
 import pytest
+
+
+def pytest_asyncio_loop_factories(config, item):
+    """ADR-0002: psycopg's AsyncConnection cannot run on Windows' default ProactorEventLoop —
+    it needs a SelectorEventLoop. pytest-asyncio builds each test's loop from this factory.
+    Off Windows we contribute nothing (return None) → the default loop is used.
+    """
+    if sys.platform == "win32":
+        return {"selector": lambda: asyncio.SelectorEventLoop(selectors.SelectSelector())}
+    return None
 
 MAINT_DSN = os.environ.get(
     "TEST_MAINT_DSN", "postgresql://rag:rag@localhost:55432/rag"

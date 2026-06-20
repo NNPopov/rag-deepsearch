@@ -1,8 +1,8 @@
 # TRANSPORT package (part 3): thin adapters over the web-free `rag` core.
 # Web dependencies (fastapi/uvicorn/sse-starlette[/a2a-sdk]) are confined HERE — they leak neither into `rag`
 # nor into `ingest` (Rag_query_architecture.md §7, fork 1). Depends only on `rag` by name
-# (uv workspace); the core knows nothing about transport. "async edge, sync core" pattern: endpoints are async,
-# the core is synchronous — called via run_in_threadpool / iterate_in_threadpool.
+# (uv workspace); the core knows nothing about transport. ADR-0002: the core is natively async, so the
+# endpoints await it directly (await run(...) / async for over stream(...)) — no thread-pool bridge.
 [project]
 name = "serve"
 version = "0.0.0"

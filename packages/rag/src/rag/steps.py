@@ -11,7 +11,7 @@ the steps do not know provider names (CLAUDE.md §2, One LLM gateway).
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 from rag.contracts import ExpandedSection, Reflection, RetrievedChunk, SearchPlan
 
@@ -38,7 +38,7 @@ def _plan_system(corpus_language: str) -> str:
     )
 
 
-def plan(question: str, *, gateway, corpus_language: str = DEFAULT_CORPUS_LANGUAGE) -> SearchPlan:
+async def plan(question: str, *, gateway, corpus_language: str = DEFAULT_CORPUS_LANGUAGE) -> SearchPlan:
     """Question → SearchPlan. An empty/whitespace question is rejected BEFORE calling the gateway.
 
     `corpus_language` is the corpus language; search queries are translated into it (cross-lingual search)."""
@@ -49,7 +49,7 @@ def plan(question: str, *, gateway, corpus_language: str = DEFAULT_CORPUS_LANGUA
         {"role": "system", "content": _plan_system(corpus_language)},
         {"role": "user", "content": f"Question: {q}"},
     ]
-    raw = gateway.completion(task="plan", messages=messages)
+    raw = await gateway.acompletion(task="plan", messages=messages)
     return SearchPlan.model_validate_json(raw)
 
 
@@ -104,7 +104,7 @@ def _reflect_user(question: str, plan: SearchPlan, chunks: list[RetrievedChunk])
     return "\n".join(lines)
 
 
-def reflect(
+async def reflect(
     question: str,
     plan: SearchPlan,
     chunks: list[RetrievedChunk],
@@ -121,7 +121,7 @@ def reflect(
         {"role": "system", "content": _reflect_system(corpus_language)},
         {"role": "user", "content": _reflect_user((question or "").strip(), plan, evidence)},
     ]
-    raw = gateway.completion(task="reflect", messages=messages)
+    raw = await gateway.acompletion(task="reflect", messages=messages)
     return Reflection.model_validate_json(raw)
 
 
@@ -146,15 +146,18 @@ def _synth_user(question: str, blocks: list[ExpandedSection]) -> str:
     return "\n".join(lines)
 
 
-def synth_stream(question: str, blocks: list[ExpandedSection], *, gateway) -> Iterator[str]:
+async def synth_stream(
+    question: str, blocks: list[ExpandedSection], *, gateway
+) -> AsyncIterator[str]:
     """Question + blocks (ExpandedSection.full_text) → a stream of answer tokens (for the SSE stream)."""
     messages = [
         {"role": "system", "content": _SYNTH_SYSTEM},
         {"role": "user", "content": _synth_user((question or "").strip(), blocks)},
     ]
-    return gateway.completion_stream(task="synth", messages=messages)
+    async for token in gateway.acompletion_stream(task="synth", messages=messages):
+        yield token
 
 
-def synth(question: str, blocks: list[ExpandedSection], *, gateway) -> str:
+async def synth(question: str, blocks: list[ExpandedSection], *, gateway) -> str:
     """Non-streaming facade: joins the token stream into a finished string (for CLI/run())."""
-    return "".join(synth_stream(question, blocks, gateway=gateway))
+    return "".join([t async for t in synth_stream(question, blocks, gateway=gateway)])

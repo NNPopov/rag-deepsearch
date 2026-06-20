@@ -86,26 +86,26 @@ class VectorSearcher:
         self._gateway = gateway
         self._top_k = top_k
 
-    def search(self, query: str, *, filters: dict | None = None) -> list[RetrievedChunk]:
-        out = self.search_many([query], filters=filters)
+    async def search(self, query: str, *, filters: dict | None = None) -> list[RetrievedChunk]:
+        out = await self.search_many([query], filters=filters)
         return out[0] if out else []
 
-    def search_many(
+    async def search_many(
         self, queries: list[str], *, filters: dict | None = None
     ) -> list[list[RetrievedChunk]]:
         """Batch: ALL queries are embedded in ONE gateway call (§6), KNN over a single connection.
 
         Embedding is one network round-trip for N queries (instead of N sequential ones): the main
-        SEARCH latency (see §6) without async. The connection is also one for the whole batch — we
-        do not churn connect/close per query. Returns a list of results in `queries` order."""
+        SEARCH latency (see §6). The connection is also one for the whole batch — we do not churn
+        connect/close per query. Returns a list of results in `queries` order."""
         from pgvector import HalfVector
-        from pgvector.psycopg import register_vector
+        from pgvector.psycopg import register_vector_async
 
         queries = list(queries)
         if not queries:
             return []  # nothing to embed — we touch neither the gateway nor the DB
 
-        vectors = self._gateway.embedding(texts=queries)   # ONE batch call for all queries
+        vectors = await self._gateway.aembedding(texts=queries)   # ONE batch call for all queries
         doc_ids = _filter_doc_ids(filters)
         where = ""
         if doc_ids is not None:
@@ -120,19 +120,20 @@ class VectorSearcher:
             LIMIT %(k)s
         """
         results: list[list[RetrievedChunk]] = []
-        conn = self._connect()
+        conn = await self._connect()
         try:
-            register_vector(conn)
+            await register_vector_async(conn)
             for vec in vectors:
                 params: dict = {"qv": HalfVector(vec), "k": self._top_k}
                 if doc_ids is not None:
                     params["doc_ids"] = doc_ids
-                rows = conn.execute(sql, params).fetchall()
+                cur = await conn.execute(sql, params)
+                rows = await cur.fetchall()
                 results.append(
                     [_row_to_chunk(r[:_N_COLS], score=1.0 - float(r[_N_COLS])) for r in rows]
                 )
         finally:
-            conn.close()
+            await conn.close()
         return results
 
 
@@ -147,8 +148,8 @@ class BM25Searcher:
         self._connect = connect
         self._top_k = top_k
 
-    def search(self, query: str, *, filters: dict | None = None) -> list[RetrievedChunk]:
-        from pgvector.psycopg import register_vector
+    async def search(self, query: str, *, filters: dict | None = None) -> list[RetrievedChunk]:
+        from pgvector.psycopg import register_vector_async
 
         params: dict = {"q": query, "k": self._top_k}
         extra = ""
@@ -156,10 +157,10 @@ class BM25Searcher:
         if doc_ids is not None:
             extra = " AND c.document_id = ANY(%(doc_ids)s)"
             params["doc_ids"] = doc_ids
-        conn = self._connect()
+        conn = await self._connect()
         try:
-            register_vector(conn)  # needed to read c.embedding → vector
-            rows = conn.execute(
+            await register_vector_async(conn)  # needed to read c.embedding → vector
+            cur = await conn.execute(
                 f"""
                 SELECT {_SELECT_COLS}, paradedb.score(c.chunk_id) AS score
                 FROM chunks c
@@ -170,9 +171,10 @@ class BM25Searcher:
                 LIMIT %(k)s
                 """,
                 params,
-            ).fetchall()
+            )
+            rows = await cur.fetchall()
         finally:
-            conn.close()
+            await conn.close()
         return [_row_to_chunk(r[:_N_COLS], score=float(r[_N_COLS])) for r in rows]
 
 
@@ -189,14 +191,14 @@ class Expander:
     def __init__(self, *, connect: ConnectFn) -> None:
         self._connect = connect
 
-    def expand(self, chunks: list[RetrievedChunk]) -> list[ExpandedSection]:
+    async def expand(self, chunks: list[RetrievedChunk]) -> list[ExpandedSection]:
         small_ids = list({c.section_id for c in chunks if c.section_id is not None})
         if not small_ids:
             return []  # nothing to expand — we do not touch the DB
 
-        conn = self._connect()
+        conn = await self._connect()
         try:
-            rows = conn.execute(
+            cur = await conn.execute(
                 """
                 SELECT small.section_id AS small_id,
                        big.section_id, big.full_text, big.document_id, d.title, big.path::text
@@ -209,9 +211,10 @@ class Expander:
                 WHERE small.section_id = ANY(%(ids)s)
                 """,
                 {"ids": small_ids},
-            ).fetchall()
+            )
+            rows = await cur.fetchall()
         finally:
-            conn.close()
+            await conn.close()
 
         small_to_big: dict[int, tuple] = {}
         for small_id, big_id, full_text, doc_id, title, path in rows:

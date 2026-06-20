@@ -10,6 +10,7 @@ Override flags selectively override thresholds from config; `--document-ids` nar
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 
@@ -109,6 +110,16 @@ def _render(result, fmt: str, *, trace: bool = False) -> str:
     return out
 
 
+def _run_async(coro):
+    """Drive an async coroutine to completion from the sync CLI entry (ADR-0002: the core is async).
+
+    On Windows psycopg's AsyncConnection cannot run on the default ProactorEventLoop — it needs a
+    SelectorEventLoop; we select it for this process before asyncio.run."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    return asyncio.run(coro)
+
+
 def main(argv: list[str] | None = None, *, load=load_settings, build=build_deep_search) -> int:
     _force_utf8()
     args = build_parser().parse_args(argv)
@@ -117,7 +128,7 @@ def main(argv: list[str] | None = None, *, load=load_settings, build=build_deep_
     deep_search = build(settings, overrides=_overrides_from_args(args))
 
     filters = {"document_ids": args.document_ids} if args.document_ids else None
-    result = deep_search.run(args.question, filters=filters)
+    result = _run_async(deep_search.run(args.question, filters=filters))
     print(_render(result, args.format, trace=args.trace))
     return 0
 

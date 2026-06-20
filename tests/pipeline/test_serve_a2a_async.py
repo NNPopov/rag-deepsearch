@@ -1,21 +1,17 @@
-"""QR14 (part 3) — A2A adapter (a2a-sdk) over the same web-free `rag` core.
+"""ADR-0002 L6 (red): A2A adapter over an ASYNC core — async port of QR14 (test_serve_a2a.py).
 
-A2A and SSE are two renderings of the SAME `Event` stream (Rag_query_architecture.md §7). Here
-we verify what the adapter is responsible for, as a pure unit (no network/DB, no full JSON-RPC stack):
-  • `_drive` — the spec-significant mapping: core Event stream → A2A task lifecycle via
-    TaskUpdater (submit → working(answer_delta) → artifact(answer) → complete);
-  • `build_agent_card` — the agent card: streaming-capability + deep-search skill;
-  • `add_a2a_routes` — route factory composing into the SAME FastAPI app: Agent Card served
-    at `/.well-known/agent-card.json`, JSON-RPC route registered;
-  • `build_serve_app(with_a2a=True)` — REST+SSE and A2A on one app.
+L6 drops the thread-pool bridge in `serve.a2a`: `execute` feeds `_drive` the core's NATIVE async
+stream directly (`self._deep_search.stream(question)`) instead of `iterate_in_threadpool(...)`. The
+`_drive` mapping itself is unchanged — it already consumes an async iterator — so here we exercise it
+over a real async-generator core (the L6 shape) plus the card / route composition over an async core.
 
-⚠ SDK version is 1.1.0: card path `/.well-known/agent-card.json` (not `agent.json`), stream
-method `message/stream` (not `tasks/sendSubscribe`) — SDK drift, isolated by the adapter (§7).
-Full JSON-RPC e2e (`message/stream` via dispatcher) deferred — like the Q12 full-loop.
+Pure unit (no DB/network/full JSON-RPC stack). The full `execute` JSON-RPC e2e stays deferred to the
+live driver (`work/q14_a2a_e2e.py`, ported at L7), as in the original QR14. RED before L6: `/query`
+(api.py) cannot drive the async fake through the thread pool.
+
+asyncio_mode=auto → `_drive` tests are plain `async def` (no asyncio.run).
 """
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,10 +23,9 @@ from rag.contracts import (
     PlanReady,
     SearchPlan,
 )
-from serve.a2a import add_a2a_routes, build_agent_card
-from serve.a2a import _drive  # spec-significant mapping — tested directly
-from serve.app import build_serve_app
+from serve.a2a import _drive, add_a2a_routes, build_agent_card
 from serve.api import create_app
+from serve.app import build_serve_app
 
 ANSWER = "Failover promotes a follower [DDIA › 6]."
 
@@ -54,11 +49,14 @@ def _events() -> list:
 
 
 class FakeDeepSearch:
-    def run(self, question, *, filters=None):
+    """Async core fake: coroutine `run` + async-generator `stream` (the L6 native-async shape)."""
+
+    async def run(self, question, *, filters=None):
         return _result()
 
-    def stream(self, question, *, filters=None):
-        yield from _events()
+    async def stream(self, question, *, filters=None):
+        for ev in _events():
+            yield ev
 
 
 class FakeUpdater:
@@ -74,7 +72,7 @@ class FakeUpdater:
         self.calls.append(("start_work",))
 
     def new_agent_message(self, parts, metadata=None):
-        return ("msg", parts)                     # echo — we'll check the part text
+        return ("msg", parts)
 
     async def update_status(self, state, message=None, **kw):
         self.calls.append(("update_status", state, message))
@@ -86,39 +84,31 @@ class FakeUpdater:
         self.calls.append(("complete",))
 
 
-async def _aiter(items):
-    for x in items:
-        yield x
+# --- _drive over the core's NATIVE async stream (L6: no iterate_in_threadpool) --------
 
-
-# --- _drive: Event → A2A task lifecycle mapping --------------------------------------
-
-def test_drive_maps_event_stream_to_task_lifecycle():
+async def test_drive_maps_native_async_stream_to_task_lifecycle():
     from a2a.types import TaskState
 
     upd = FakeUpdater()
-    # default threshold is large → two small deltas batch into ONE working flush at the end
-    asyncio.run(_drive(upd, _aiter(_events())))
+    # the core's async generator is consumed directly (this is exactly what execute now passes)
+    await _drive(upd, FakeDeepSearch().stream("q"))
 
     kinds = [c[0] for c in upd.calls]
-    # start_work → (batch of working deltas) → answer artifact → complete
-    # (the Task/submitted object is seeded by execute BEFORE _drive — the framework requires a Task before any status-update)
-    assert kinds == [
-        "start_work", "update_status", "add_artifact", "complete",
-    ]
-    # the single working-status carries the concatenated deltas
+    assert kinds == ["start_work", "update_status", "add_artifact", "complete"]
     deltas = [c for c in upd.calls if c[0] == "update_status"]
     assert len(deltas) == 1
     assert deltas[0][1] == TaskState.TASK_STATE_WORKING
-    assert deltas[0][2][1][0].text == "Failover promotes a follower."   # message=("msg",[Part]) → .text
-    # final artifact = the full answer (from Final.result.answer, not from the deltas)
+    assert deltas[0][2][1][0].text == "Failover promotes a follower."
     artifact = next(c for c in upd.calls if c[0] == "add_artifact")
     assert artifact[1][0].text == ANSWER
     assert artifact[2] == "answer"
 
 
-def test_drive_batches_answer_deltas_by_threshold():
-    # many small deltas + a low threshold → FEWER flushes than deltas, but text preserved whole
+async def test_drive_batches_answer_deltas_by_threshold():
+    async def _aiter(items):
+        for x in items:
+            yield x
+
     deltas = ["Fa", "il", "ov", "er", " p", "ro", "mo", "te", "s ", "fo", "ll", "ow", "er", "."]
     events = (
         [PlanReady(plan=_plan())]
@@ -126,14 +116,14 @@ def test_drive_batches_answer_deltas_by_threshold():
         + [Final(result=_result())]
     )
     upd = FakeUpdater()
-    asyncio.run(_drive(upd, _aiter(events), delta_chars=10))
+    await _drive(upd, _aiter(events), delta_chars=10)
 
     flushes = [c for c in upd.calls if c[0] == "update_status"]
-    assert 1 < len(flushes) < len(deltas)                 # batching: fewer frames than deltas
-    assert "".join(f[2][1][0].text for f in flushes) == "".join(deltas)   # not a byte lost
+    assert 1 < len(flushes) < len(deltas)
+    assert "".join(f[2][1][0].text for f in flushes) == "".join(deltas)
 
 
-# --- Agent Card ----------------------------------------------------------------------
+# --- Agent Card (unchanged) ----------------------------------------------------------
 
 def test_build_agent_card_advertises_streaming_and_skill():
     card = build_agent_card()
@@ -142,7 +132,7 @@ def test_build_agent_card_advertises_streaming_and_skill():
     assert any(s.id == "deep-search" for s in card.skills)
 
 
-# --- Composing routes into the SAME app -----------------------------------------------
+# --- Composing routes over an async core ---------------------------------------------
 
 @pytest.fixture
 def a2a_client() -> TestClient:
@@ -158,7 +148,6 @@ def test_agent_card_served_at_well_known(a2a_client):
 
 
 def test_jsonrpc_route_registered_alongside_rest(a2a_client):
-    # JSON-RPC lives at rpc_url ("/") and does NOT break REST: /query still responds
     assert a2a_client.post("/query", json={"question": "q"}).status_code == 200
     paths = {getattr(r, "path", None) for r in a2a_client.app.routes}
     assert "/.well-known/agent-card.json" in paths

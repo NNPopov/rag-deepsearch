@@ -1,14 +1,13 @@
-"""QR13 (part 3) — FastAPI REST + SSE adapter over the web-free `rag` core.
+"""ADR-0002 L6 (red): FastAPI REST+SSE over an ASYNC core — async port of QR13 (test_serve_api.py).
 
-External-dependency strategy: PURE UNIT — a fake `DeepSearch` (run/stream), no DB and no
-network. We verify exactly what the transport is responsible for (Rag_query_architecture.md §7):
-  • `POST /query` → 200 + serialized `DeepSearchResult` (sync core via threadpool);
-  • `--document-ids` → `filters={"document_ids":[...]}` reach the core (both in run and stream);
-  • `GET /query/stream` → SSE: each `Event` → `event: <type>` + `data: <model_dump_json>`,
-    in the same order `stream()` emits them (SSE and A2A are two renderings of the SAME stream);
-  • `event_to_sse` maps type→event name and body→JSON;
-  • composition root `build_serve_app` assembles the app via injection (load/build/deep_search).
-The core (`rag`) knows nothing of the transport: the fake implements only `.run()`/`.stream()`.
+L6 drops the thread-pool bridge: `serve.api` calls the async core DIRECTLY —
+  • `POST /query` → `result = await deep_search.run(...)` (no `run_in_threadpool`);
+  • `GET /query/stream` → `async for event in deep_search.stream(...)` (no `iterate_in_threadpool`).
+The `Event → SSE` mapping (`event_to_sse`) and the wire format are unchanged.
+
+Pure unit: an ASYNC fake `DeepSearch` (async `run`, async-generator `stream`), no DB/network.
+`TestClient` drives the event loop synchronously, so the test functions stay sync. RED before L6:
+`api.py` bridges through the thread pool, which cannot drive a coroutine `run` / an async-gen `stream`.
 """
 from __future__ import annotations
 
@@ -60,29 +59,29 @@ def _events() -> list:
 
 
 class FakeDeepSearch:
-    """Core fake: records calls, returns a predefined final/stream (no DB/network)."""
+    """Async core fake: `run` is a coroutine, `stream` is an async generator (no DB/network)."""
 
     def __init__(self) -> None:
         self.run_calls: list = []
         self.stream_calls: list = []
 
-    def run(self, question: str, *, filters=None):
+    async def run(self, question: str, *, filters=None):
         self.run_calls.append((question, filters))
         return _result()
 
-    def stream(self, question: str, *, filters=None):
+    async def stream(self, question: str, *, filters=None):
         self.stream_calls.append((question, filters))
-        yield from _events()
+        for ev in _events():
+            yield ev
 
 
 def _parse_sse(text: str) -> list[dict]:
-    """Parse the SSE body into a list of {'event':..., 'data':...} (skip ': ' ping comments)."""
     out: list[dict] = []
-    text = text.replace("\r\n", "\n")          # sse-starlette sends CRLF — normalize
+    text = text.replace("\r\n", "\n")
     for block in text.strip().split("\n\n"):
         ev: dict = {}
         for line in block.splitlines():
-            if line.startswith(":"):           # SSE comment (ping) — ignore
+            if line.startswith(":"):
                 continue
             if line.startswith("event:"):
                 ev["event"] = line[len("event:"):].strip()
@@ -124,7 +123,7 @@ def test_post_query_with_document_ids_builds_filters(client, fake):
     assert fake.run_calls == [("q", {"document_ids": [1, 2]})]
 
 
-# --- event_to_sse --------------------------------------------------------------------
+# --- event_to_sse (unchanged mapping) ------------------------------------------------
 
 def test_event_to_sse_maps_type_and_json():
     ev = PlanReady(plan=_plan())
@@ -133,7 +132,7 @@ def test_event_to_sse_maps_type_and_json():
     assert json.loads(sse["data"]) == json.loads(ev.model_dump_json())
 
 
-# --- GET /query/stream (SSE) ---------------------------------------------------------
+# --- GET /query/stream (SSE over an async generator) ---------------------------------
 
 def test_stream_emits_events_in_order(client):
     r = client.get("/query/stream", params={"question": "How is failover handled?"})
@@ -169,19 +168,18 @@ def test_build_serve_app_uses_injected_deep_search(fake):
         built.append(settings)
         return fake
 
-    app = build_serve_app(load=lambda: sentinel, build=fake_build)
+    app = build_serve_app(load=lambda: sentinel, build=fake_build, with_a2a=False)
     c = TestClient(app)
     r = c.post("/query", json={"question": "q"})
     assert r.status_code == 200
-    assert built == [sentinel]                 # config read once and handed to the builder
+    assert built == [sentinel]
     assert fake.run_calls == [("q", None)]
 
 
 def test_build_serve_app_accepts_explicit_deep_search(fake):
-    # deep_search passed directly → load/build are not called (no network/DB)
     def boom(*a, **k):  # pragma: no cover
         raise AssertionError("must not be called")
 
-    app = build_serve_app(deep_search=fake, load=boom, build=boom)
+    app = build_serve_app(deep_search=fake, load=boom, build=boom, with_a2a=False)
     c = TestClient(app)
     assert c.post("/query", json={"question": "q"}).status_code == 200

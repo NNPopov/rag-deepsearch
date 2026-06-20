@@ -1,9 +1,9 @@
 """Deep-search loop — the query-side core (Rag_query_architecture.md §1, §3, §5, §6).
 
 `DeepSearch` orchestrates PLAN → SEARCH(hybrid RRF) → REFLECT(source-aware) → LOOP →
-EXPAND(small2big) → MMR → SYNTH. Web-free and SYNCHRONOUS (variant A, §6): a single query is
-a sequence of LLM calls, async gives no gain; embedding latency is beaten by batching the
-queries in the searcher, not by coroutines.
+EXPAND(small2big) → MMR → SYNTH. Web-free and ASYNC (ADR-0002): the I/O steps await the async
+gateway/searchers/expander, while the pure transforms (RRF/MMR/`_cited_sources`) stay synchronous
+— coloring a function that never awaits would be contagion for nothing.
 
 Two entry points over ONE event generator (§3.3): `stream()` emits an `Event` stream (for
 transport), `run()` drives that same `stream()` and returns the `DeepSearchResult` from the
@@ -16,7 +16,7 @@ constructor; the loop itself does not read config (the composition root `rag/app
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 
 from rag import steps
 from rag.contracts import (
@@ -118,15 +118,15 @@ class DeepSearch:
         self._references_penalty = references_penalty  # rank penalty for references sections (1.0=off)
 
     # --- public interface ------------------------------------------------------------
-    def run(self, question: str, *, filters: dict | None = None) -> DeepSearchResult | None:
+    async def run(self, question: str, *, filters: dict | None = None) -> DeepSearchResult | None:
         """Drives stream() to the end and returns the result from the final Final (§3.3)."""
         result: DeepSearchResult | None = None
-        for ev in self.stream(question, filters=filters):
+        async for ev in self.stream(question, filters=filters):
             if isinstance(ev, Final):
                 result = ev.result
         return result
 
-    def stream(self, question: str, *, filters: dict | None = None) -> Iterator[Event]:
+    async def stream(self, question: str, *, filters: dict | None = None) -> AsyncIterator[Event]:
         trace: list[Event] = []
 
         def emit(ev: Event) -> Event:
@@ -134,7 +134,7 @@ class DeepSearch:
             return ev
 
         # --- PLAN --------------------------------------------------------------------
-        plan = steps.plan(question, gateway=self._gateway, corpus_language=self._corpus_language)
+        plan = await steps.plan(question, gateway=self._gateway, corpus_language=self._corpus_language)
         yield emit(PlanReady(plan=plan))
 
         # --- SEARCH / REFLECT / LOOP -------------------------------------------------
@@ -147,8 +147,9 @@ class DeepSearch:
 
             # SEARCH: N vector + M bm25 lists → RRF → dedup accumulation.
             # All vector queries of the round in ONE batch embedding (§6); bm25 is lexical, no gateway.
-            lists = self._vector.search_many(vqs, filters=filters)
-            lists += [self._bm25.search(q, filters=filters) for q in bqs]
+            lists = await self._vector.search_many(vqs, filters=filters)
+            for q in bqs:
+                lists.append(await self._bm25.search(q, filters=filters))
             fused = rrf(lists, k=self._rrf_k)
             penalize_references(fused, self._references_penalty)  # reference lists — down, not out
             new_count = 0
@@ -169,7 +170,7 @@ class DeepSearch:
                 break
 
             # REFLECT (source-aware): the critic sees ALL accumulated results
-            reflection = steps.reflect(
+            reflection = await steps.reflect(
                 question, plan, list(accumulated.values()),
                 gateway=self._gateway, relevance_threshold=self._relevance_threshold,
                 corpus_language=self._corpus_language,
@@ -195,14 +196,14 @@ class DeepSearch:
         pool.sort(key=lambda c: c.score, reverse=True)
         pool = pool[: self._max_chunks]
         selected = mmr(pool, lambda_=self._mmr_lambda, top_n=self._mmr_top_n)
-        blocks = self._expander.expand(selected)
+        blocks = await self._expander.expand(selected)
         yield emit(ExpandReady(
             section_ids=[b.section_id for b in blocks], blocks=len(blocks),
         ))
 
         # --- SYNTH (stream tokens over the blocks' full_text) ------------------------
         parts: list[str] = []
-        for tok in steps.synth_stream(question, blocks, gateway=self._gateway):
+        async for tok in steps.synth_stream(question, blocks, gateway=self._gateway):
             parts.append(tok)
             yield emit(AnswerDelta(text=tok))
         answer = "".join(parts)

@@ -25,6 +25,8 @@ class Gateway:
         retries: int = 2,
         completion_fn: Callable | None = None,
         embedding_fn: Callable | None = None,
+        acompletion_fn: Callable | None = None,
+        aembedding_fn: Callable | None = None,
         cost_logger: Callable | None = None,
     ) -> None:
         self._model_map = dict(model_map)
@@ -32,6 +34,8 @@ class Gateway:
         self._retries = int(retries)
         self._completion_fn = completion_fn
         self._embedding_fn = embedding_fn
+        self._acompletion_fn = acompletion_fn
+        self._aembedding_fn = aembedding_fn
         self._cost_logger = cost_logger
 
     # --- public interface ---------------------------------------------------
@@ -83,6 +87,55 @@ class Gateway:
                 )
         return vectors
 
+    # --- async interface (ADR-0002: dual-surface; query+serve core) ----------
+    async def acompletion(self, *, task: str, messages: list[dict], **kw) -> str:
+        """Async sibling of completion() — same model map / retries / cost log / KeyError."""
+        model = self._resolve(task)
+        resp = await self._acall(self._acompletion, model=model, messages=messages, **kw)
+        self._log_cost(model=model, response=resp)
+        return resp.choices[0].message.content
+
+    async def acompletion_stream(self, *, task: str, messages: list[dict], **kw):
+        """Async generator of text deltas (for the SYNTH SSE stream) — async sibling of
+        completion_stream(). Over `litellm.acompletion(stream=True)`, whose awaited result is an
+        async iterator of chunks. NO retries (a stream can't be replayed from the middle). Lazy:
+        an unknown task (KeyError from `_resolve`) surfaces at the first iteration.
+        """
+        model = self._resolve(task)
+        resp = await self._acompletion(model=model, messages=messages, stream=True, **kw)
+        async for chunk in resp:
+            choices = getattr(chunk, "choices", None) or (
+                chunk.get("choices") if isinstance(chunk, dict) else None
+            )
+            if not choices:
+                continue
+            first = choices[0]
+            delta = getattr(first, "delta", None)
+            if delta is None and isinstance(first, dict):
+                delta = first.get("delta")
+            content = getattr(delta, "content", None)
+            if content is None and isinstance(delta, dict):
+                content = delta.get("content")
+            if content:
+                yield content
+
+    async def aembedding(
+        self, *, texts: Sequence[str], task: str = "embed"
+    ) -> list[list[float]]:
+        """Async sibling of embedding() — same dimension/order contract."""
+        model = self._resolve(task)
+        resp = await self._acall(
+            self._aembedding, model=model, input=list(texts), dimensions=self._dimension
+        )
+        vectors = self._ordered_vectors(resp, expected=len(texts))
+        for v in vectors:
+            if len(v) != self._dimension:
+                raise ValueError(
+                    f"embedding length {len(v)} != dimension {self._dimension} "
+                    f"(model={model})"
+                )
+        return vectors
+
     # --- internal ------------------------------------------------------------
     def _resolve(self, task: str) -> str:
         return self._model_map[task]  # unknown task → KeyError (contract R3)
@@ -93,6 +146,16 @@ class Gateway:
         for _ in range(self._retries + 1):
             try:
                 return fn(**kw)
+            except Exception as exc:  # noqa: BLE001 — the gateway retries any transient failures
+                last = exc
+        raise last  # type: ignore[misc]
+
+    async def _acall(self, fn: Callable, **kw):
+        """Async call with retries of transient errors; total attempts = retries + 1."""
+        last: Exception | None = None
+        for _ in range(self._retries + 1):
+            try:
+                return await fn(**kw)
             except Exception as exc:  # noqa: BLE001 — the gateway retries any transient failures
                 last = exc
         raise last  # type: ignore[misc]
@@ -134,3 +197,19 @@ class Gateway:
         import litellm  # noqa: PLC0415
 
         return litellm.embedding
+
+    @property
+    def _acompletion(self) -> Callable:
+        if self._acompletion_fn is not None:
+            return self._acompletion_fn
+        import litellm  # noqa: PLC0415 — pull the provider only in prod
+
+        return litellm.acompletion
+
+    @property
+    def _aembedding(self) -> Callable:
+        if self._aembedding_fn is not None:
+            return self._aembedding_fn
+        import litellm  # noqa: PLC0415
+
+        return litellm.aembedding

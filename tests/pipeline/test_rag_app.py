@@ -197,7 +197,8 @@ def _result(answer="The answer [DDIA › A]."):
 class FakeDeepSearch:
     def __init__(self, result): self._result = result; self.run_calls = []
 
-    def run(self, question, *, filters=None):
+    async def run(self, question, *, filters=None):
+        # ADR-0002: the core is async — the CLI drives run() via asyncio.run()
         self.run_calls.append((question, filters))
         return self._result
 

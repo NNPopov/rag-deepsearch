@@ -14,7 +14,6 @@ the risk for the isolation of which the SDK is locked inside the adapter (§7).
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.concurrency import iterate_in_threadpool
 
 from a2a.helpers.proto_helpers import new_task
 from a2a.server.agent_execution import AgentExecutor
@@ -67,9 +66,9 @@ async def _drive(updater, aevents, *, delta_chars: int = DELTA_FLUSH_CHARS) -> s
     start_work → `answer_delta`s accumulate into a buffer and are flushed as a working status in
     CHUNKS of `delta_chars` characters (the remainder — before the artifact): otherwise token=frame
     and the A2A stream is chatty. The final answer is shaped as the `answer` artifact → complete.
-    `aevents` is an ASYNCHRONOUS iterator (in prod it is the sync `stream()` wrapped in
-    `iterate_in_threadpool`: async edge, sync core). The Task object itself (submitted) is seeded by
-    `execute` BEFORE the call — the framework requires a Task before any status-update.
+    `aevents` is an ASYNCHRONOUS iterator — in prod the core's native async generator `stream()`
+    (ADR-0002: no thread-pool bridge). The Task object itself (submitted) is seeded by `execute`
+    BEFORE the call — the framework requires a Task before any status-update.
     """
     await updater.start_work()
 
@@ -112,9 +111,8 @@ class RagAgentExecutor(AgentExecutor):
                 new_task(task_id, context_id, TaskState.TASK_STATE_SUBMITTED)
             )
         updater = TaskUpdater(event_queue, task_id, context_id)
-        # the core's sync generator is pulled in a thread pool, events fed to the updater (async edge)
-        aevents = iterate_in_threadpool(self._deep_search.stream(question))
-        await _drive(updater, aevents)
+        # the core's native async generator is consumed directly (ADR-0002: no thread-pool bridge)
+        await _drive(updater, self._deep_search.stream(question))
 
     async def cancel(self, context, event_queue) -> None:  # pragma: no cover
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
